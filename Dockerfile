@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=m.daocloud.io/docker.io/docker/dockerfile:1
 
 # =====================================================================
 # ComfyUI on AMD ROCm 10.0 / Python 3.13
@@ -27,10 +27,10 @@ FROM rocm/pytorch:rocm10.0_ubuntu24.04_py3.13_pytorch_release_2.13.0
 
 # ---------------------------------------------------------------------
 # 2) 版本参数。固定到 release tag 保证镜像可复现；
-#    想跟踪最新代码可 --build-arg COMFYUI_VERSION=master
+#    想跟踪最新代码可 --build-arg COMFYUI_VERSION=main
 # ---------------------------------------------------------------------
 ARG COMFYUI_VERSION=v0.37.4
-ARG MANAGER_BRANCH=master
+ARG MANAGER_BRANCH=main
 
 # ---------------------------------------------------------------------
 # 3) ComfyUI 工作目录。main.py 假定 models/、output/、input/、
