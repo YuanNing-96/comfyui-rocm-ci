@@ -6,16 +6,6 @@
 # 基础镜像 = ROCm 10.0 运行时 + Ubuntu 24.04 + Python 3.13 + PyTorch 2.13.0
 # (PyTorch 为 ROCm 官方构建，已预装，无需再编译/安装 torch)
 #
-# 构建:  docker build -t comfyui-rocm10 .
-# 运行:  docker run -d --name comfyui \
-#           --device /dev/kfd --device /dev/dri \
-#           --ipc=host \
-#           -p 8188:8188 \
-#           -v $PWD/models:/opt/ComfyUI/models \
-#           -v $PWD/output:/opt/ComfyUI/output \
-#           -v $PWD/custom_nodes:/opt/ComfyUI/custom_nodes \
-#           -v $PWD/input:/opt/ComfyUI/input \
-#           comfyui-rocm10
 # 追加启动参数:  -e CLI_ARGS="--lowvram --reserve-vram 2"
 # =====================================================================
 
@@ -91,6 +81,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -c /opt/ComfyUI/constraints.txt -r requirements.txt \
     && pip install -c /opt/ComfyUI/constraints.txt \
         -r /opt/bundled/ComfyUI-Manager/requirements.txt
+
+# 关键步骤：把 models 目录备份到镜像内的其他位置
+RUN cp -a /opt/ComfyUI/models /opt/ComfyUI/models.default
 
 # ---------------------------------------------------------------------
 # 9) 启动入口：固定核心参数，允许通过 CLI_ARGS 环境变量追加

@@ -27,6 +27,12 @@ if [ ! -d /opt/ComfyUI/custom_nodes/ComfyUI-Manager ]; then
     echo "[INFO] Installed bundled ComfyUI-Manager into custom_nodes"
 fi
 
+# 判断 models 是否为空（-A 会列出包括隐藏文件在内的所有条目）
+if [ -z "$(ls -A /opt/ComfyUI/models)" ]; then
+    echo "[entrypoint] /opt/ComfyUI/models 为空，从 /opt/ComfyUI/models.default 恢复默认结构..."
+    cp -a /opt/ComfyUI/models.default/. /opt/ComfyUI/models/
+fi
+
 echo "[INFO] Starting ComfyUI..."
 echo "########################################"
 
