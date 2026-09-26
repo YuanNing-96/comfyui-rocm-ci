@@ -1,0 +1,39 @@
+# ComfyUI on AMD ROCm 10.0 / Python 3.13
+# 追加启动参数:  在 environment 的 CLI_ARGS 里填写，例如:
+#   CLI_ARGS=--lowvram --reserve-vram 2
+services:
+  comfyui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: comfyui-rocm10-py3.13
+    container_name: comfyui
+    restart: unless-stopped
+    ports:
+      - "8188:8188"
+    environment:
+      # 追加的 ComfyUI 启动参数，不需要就留空
+      - CLI_ARGS=
+      # 多卡机器指定用哪张卡（单卡不用管）
+      # - HSA_VISIBLE_DEVICES=0
+    # ROCm 容器可见 GPU 的两个设备节点
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    # HIP 多进程共享内存，AMD 官方推荐
+    ipc: host
+    volumes:
+      - ./models:/opt/ComfyUI/models
+      - ./output:/opt/ComfyUI/output
+      - ./input:/opt/ComfyUI/input
+      - ./custom_nodes:/opt/ComfyUI/custom_nodes
+      # 可选：启动前钩子（目录里放 pre-start.sh 即生效）
+      # - ./user-scripts:/opt/ComfyUI/user-scripts
+    healthcheck:
+      # 用 python 内置库探测 /system_stats，不依赖镜像里装 curl
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8188/system_stats')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # 首次启动要加载 torch/ROCm 并扫描模型，给足启动宽限
+      start_period: 120s
