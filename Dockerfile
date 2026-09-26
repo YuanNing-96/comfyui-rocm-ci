@@ -39,7 +39,7 @@ WORKDIR /opt/ComfyUI
 RUN --mount=type=cache,target=/var/cache/apt \
     DEBIAN_FRONTEND=noninteractive apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        git ffmpeg aria2 cmake ninja-build fonts-noto-cjk \
+        git ffmpeg aria2 cmake ninja-build fonts-noto-cjk socat \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------

@@ -16,7 +16,11 @@ services:
       - CLI_ARGS=
       # 多卡机器指定用哪张卡（单卡不用管）
       # - HSA_VISIBLE_DEVICES=0
-    # ROCm 容器可见 GPU 的两个设备节点
+      # 非root用户传ug能规避文件权限问题
+      - PUID=1000
+      - PGID=1000
+      # 被列出的文件夹会在启动阶段被降权为传入的PUID和PGID
+      - APP_DIRS=/opt/ComfyUI
     devices:
       - /dev/kfd
       - /dev/dri
