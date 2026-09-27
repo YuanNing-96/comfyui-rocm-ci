@@ -9,11 +9,92 @@
 # 追加启动参数:  -e CLI_ARGS="--lowvram --reserve-vram 2"
 # =====================================================================
 
+# =====================================================================
+# 构建阶段：复用与运行阶段相同的基础镜像，避免单独安装 Python 3.13
+# =====================================================================
+FROM m.daocloud.io/docker.io/rocm/pytorch:rocm10.0_ubuntu24.04_py3.13_pytorch_release_2.13.0 AS llama-cpp-builder
+
+# 替换 Ubuntu apt 源
+RUN sed -i 's|http://archive.ubuntu.com|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/ubuntu.sources \
+    && sed -i 's|http://security.ubuntu.com|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/ubuntu.sources
+
+# 添加 ROCm 10.0 APT 源并安装开发包
+RUN apt-get update && apt-get install -y --no-install-recommends curl gnupg2 \
+    && mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://stable.repo.amd.com/rocm/gpg/packages.gpg | gpg --dearmor -o /etc/apt/keyrings/amdrocm.gpg \
+    && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/amdrocm.gpg] https://stable.repo.amd.com/rocm/core/packages/ubuntu2404 stable main" > /etc/apt/sources.list.d/rocm.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        amdrocm-core-dev10.0 \
+        amdrocm-blas-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# 配置 pip 国内源
+RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+    && pip config set global.trusted-host pypi.tuna.tsinghua.edu.cn \
+    && pip config set global.extra-index-url https://pypi.org/simple
+
+# 在构建阶段，安装 patchelf 前执行
+RUN add-apt-repository universe && apt-get update \
+    && apt-get install -y --no-install-recommends patchelf
+
+# 2) 把构建后端提前装进 venv
+RUN /opt/venv/bin/pip install --no-cache-dir \
+    scikit-build-core cmake ninja
+
+# 编译并安装到 site-packages（关键：用 install，不是 wheel）
+# 编译并安装到 site-packages
+RUN CMAKE_ARGS="-DGGML_HIP=on \
+    -DAMDGPU_TARGETS=gfx1100 \
+    -DCMAKE_HIP_COMPILER_ROCM_ROOT=/opt/rocm \
+    -DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang \
+    -DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++ \
+    -DCMAKE_PREFIX_PATH=/opt/rocm \
+    -DGGML_NATIVE=OFF" \
+    FORCE_CMAKE=1 \
+    HIP_PATH=/opt/rocm \
+    CXX=/opt/rocm/bin/hipcc \
+    bash -c '/opt/venv/bin/pip install -v --no-build-isolation --no-cache-dir llama-cpp-python \
+        > /tmp/llama-build.log 2>&1 \
+        || (echo "===== BUILD FAILED, last 300 lines =====" && tail -n 300 /tmp/llama-build.log && exit 1)'
+
+# 断言 HIP 后端真的编出来了
+RUN ls /opt/venv/lib/python3.13/site-packages/llama_cpp/lib/ | grep -q "ggml-hip" \
+    || (echo "ERROR: HIP backend not built" && exit 1)
+
+# 显式复制 HIP 核心库到 llama_cpp/lib/
+RUN SITE_PACKAGES=$(/opt/venv/bin/python -c "import sysconfig; print(sysconfig.get_path('purelib'))") && \
+    DEST="$SITE_PACKAGES/llama_cpp/lib" && \
+    for d in \
+        /opt/venv/lib/python3.13/site-packages/_rocm_sdk_libraries \
+        /opt/venv/lib/python3.13/site-packages/_rocm_sdk_core ; do \
+        if [ -d "$d" ] ; then \
+            echo "===== Copying from $d =====" && \
+            find "$d" -name "*.so*" -type f -exec cp -L --update=none {} "$DEST/" \; 2>/dev/null || true ; \
+            find "$d" -name "*.so*" -type l -exec cp -L --update=none {} "$DEST/" \; 2>/dev/null || true ; \
+        fi \
+    done && \
+    echo "===== llama_cpp/lib after copy =====" && \
+    ls "$DEST/" | grep -E "hipblas|amdhip|libomp" || echo "WARNING: some libs missing"
+
+# 设置 RPATH 为 $ORIGIN
+RUN SITE_PACKAGES=$(/opt/venv/bin/python -c "import sysconfig; print(sysconfig.get_path('purelib'))") && \
+    find "$SITE_PACKAGES/llama_cpp/lib" -name "*.so*" \
+    -exec patchelf --set-rpath '$ORIGIN' {} \;
+
+RUN /opt/venv/bin/pip install --no-cache-dir wheel \
+    && SITE_PACKAGES=$(/opt/venv/bin/python -c "import sysconfig; print(sysconfig.get_path('purelib'))") \
+    && mkdir -p /tmp/wheel_stage \
+    && cp -a "$SITE_PACKAGES/llama_cpp" /tmp/wheel_stage/ \
+    && cp -a "$SITE_PACKAGES"/llama_cpp_python-*.dist-info /tmp/wheel_stage/ \
+    && mkdir -p /tmp/wheels \
+    && /opt/venv/bin/python -m wheel pack /tmp/wheel_stage -d /tmp/wheels
+
 # ---------------------------------------------------------------------
 # 1) 基础镜像：ROCm 10.0 + Python 3.13 + PyTorch(ROCm 构建)
 #    标签格式: rocm{版本}_ubuntu{版本}_py{python版本}_pytorch_release_{torch版本}
 # ---------------------------------------------------------------------
-FROM rocm/pytorch:rocm10.0_ubuntu24.04_py3.13_pytorch_release_2.13.0
+FROM m.daocloud.io/docker.io/rocm/pytorch:rocm10.0_ubuntu24.04_py3.13_pytorch_release_2.13.0
 
 # ---------------------------------------------------------------------
 # 2) 版本参数。固定到 release tag 保证镜像可复现；
@@ -27,6 +108,16 @@ ARG MANAGER_BRANCH=main
 #    custom_nodes/ 等目录位于代码同级，所以全部收拢在 /opt/ComfyUI 下
 # ---------------------------------------------------------------------
 WORKDIR /opt/ComfyUI
+
+# 替换 apt 源为清华镜像
+RUN sed -i 's|http://archive.ubuntu.com|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/ubuntu.sources \
+    && sed -i 's|http://security.ubuntu.com|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/ubuntu.sources \
+    && apt-get update
+
+# 配置 pip 国内源
+RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+    && pip config set global.trusted-host pypi.tuna.tsinghua.edu.cn \
+    && pip config set global.extra-index-url https://pypi.org/simple
 
 # ---------------------------------------------------------------------
 # 4) 基础工具：
@@ -81,6 +172,10 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -c /opt/ComfyUI/constraints.txt -r requirements.txt \
     && pip install -c /opt/ComfyUI/constraints.txt \
         -r /opt/bundled/ComfyUI-Manager/requirements.txt
+
+# 从构建阶段复制 wheel 并安装
+COPY --from=llama-cpp-builder /tmp/wheels/ /tmp/llama-wheels/
+RUN pip install --no-cache-dir --find-links=/tmp/llama-wheels /tmp/llama-wheels/*.whl && rm -rf /tmp/llama-wheels
 
 # 关键步骤：把 models 目录备份到镜像内的其他位置
 RUN cp -a /opt/ComfyUI/models /opt/ComfyUI/models.default
